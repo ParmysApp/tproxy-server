@@ -52,6 +52,12 @@ else:
         ],
     }
 
+# Older panel installs predate the explicit MTProxy port field. Migrate them
+# in place so the supervisor can reconcile their existing backends safely.
+for proxy in state.get('proxies', []):
+    if 'mtproxy_port' not in proxy:
+        proxy['mtproxy_port'] = int(proxy['backend'].rsplit(':', 1)[1])
+
 
 def atomic_write(path, content, mode, uid, gid):
     fd, temporary = tempfile.mkstemp(prefix=path.name+'.', dir=path.parent)
