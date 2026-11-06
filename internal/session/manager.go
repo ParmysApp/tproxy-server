@@ -78,6 +78,7 @@ type Manager struct {
 	bootstraps           map[[sha256.Size]byte]*bootstrap
 	bootstrapsPerIP      map[string]int
 	sessions             map[[sha256.Size]byte]*Session
+	supersededSessions   map[*Session]struct{}
 	closedTokens         map[[sha256.Size]byte]time.Time
 	sessionsPerIP        map[string]int
 	sessionsPerProfile   map[string]int
@@ -119,6 +120,7 @@ func NewManager(value config.Config, tokenKey [sha256.Size]byte) *Manager {
 		bootstraps:          make(map[[sha256.Size]byte]*bootstrap),
 		bootstrapsPerIP:     make(map[string]int),
 		sessions:            make(map[[sha256.Size]byte]*Session),
+		supersededSessions:  make(map[*Session]struct{}),
 		closedTokens:        make(map[[sha256.Size]byte]time.Time),
 		sessionsPerIP:       make(map[string]int),
 		sessionsPerProfile:  make(map[string]int),
@@ -144,6 +146,12 @@ func (m *Manager) MatchCapability(value []byte) *config.Profile {
 	if len(value) != sha256.Size {
 		return nil
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.matchCapabilityLocked(value)
+}
+
+func (m *Manager) matchCapabilityLocked(value []byte) *config.Profile {
 	if _, ok := m.capabilityPrefixes[capabilityPrefix(value)]; !ok {
 		return nil
 	}
@@ -164,10 +172,7 @@ func (m *Manager) IssueBootstrap(profile *config.Profile, clientIP string) (stri
 	if profile == nil {
 		return "", ErrAuthentication
 	}
-	profile = m.MatchCapability(profile.Capability[:])
-	if profile == nil {
-		return "", ErrAuthentication
-	}
+	capability := profile.Capability
 	now := time.Now()
 	token, hash, err := m.newToken(TokenBootstrap)
 	if err != nil {
@@ -175,6 +180,10 @@ func (m *Manager) IssueBootstrap(profile *config.Profile, clientIP string) (stri
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	profile = m.matchCapabilityLocked(capability[:])
+	if profile == nil {
+		return "", ErrAuthentication
+	}
 	if m.closed {
 		return "", ErrClosed
 	}
@@ -230,11 +239,31 @@ func (m *Manager) Create(token, clientIP string, body []byte) (CreateResult, err
 		}, nil
 	}
 	profileLimits := entry.profile.Limits
+	var replaced []*Session
+	if m.sessionsPerProfile[entry.profile.Name] >= profileLimits.MaxSessions {
+		if profileLimits.MaxSessions != 1 {
+			m.limitHits.Add(1)
+			return CreateResult{}, ErrLimit
+		}
+		for _, current := range m.sessions {
+			if current.profile.Name == entry.profile.Name {
+				replaced = append(replaced, current)
+			}
+		}
+		if len(replaced) == 0 {
+			m.limitHits.Add(1)
+			return CreateResult{}, ErrLimit
+		}
+	}
+	perIP := m.sessionsPerIP[clientIP]
+	for _, current := range replaced {
+		if current.clientIP == clientIP {
+			perIP--
+		}
+	}
 	if m.closed ||
-		len(m.sessions) >= m.config.Limits.MaxSessionsGlobal ||
-		m.sessionsPerProfile[entry.profile.Name] >= profileLimits.MaxSessions ||
-		(m.config.Limits.MaxSessionsPerIP != 0 &&
-			m.sessionsPerIP[clientIP] >= m.config.Limits.MaxSessionsPerIP) {
+		len(m.sessions)-len(replaced) >= m.config.Limits.MaxSessionsGlobal ||
+		(m.config.Limits.MaxSessionsPerIP != 0 && perIP >= m.config.Limits.MaxSessionsPerIP) {
 		m.limitHits.Add(1)
 		return CreateResult{}, ErrLimit
 	}
@@ -276,6 +305,18 @@ func (m *Manager) Create(token, clientIP string, body []byte) (CreateResult, err
 		onUp:   func(count int) { m.bytesUp.Add(uint64(count)) },
 		onDown: func(count int) { m.bytesDown.Add(uint64(count)) },
 	})
+	for _, previous := range replaced {
+		m.supersededSessions[previous] = struct{}{}
+		m.sessionsPerProfile[entry.profile.Name]--
+		if m.sessionsPerProfile[entry.profile.Name] <= 0 {
+			delete(m.sessionsPerProfile, entry.profile.Name)
+		}
+		for oldHash, oldBootstrap := range m.bootstraps {
+			if oldBootstrap.session == previous {
+				m.removeBootstrapLocked(oldHash, oldBootstrap)
+			}
+		}
+	}
 	m.sessions[sessionHash] = created
 	m.sessionsPerIP[clientIP]++
 	m.sessionsPerProfile[entry.profile.Name]++
@@ -284,6 +325,9 @@ func (m *Manager) Create(token, clientIP string, body []byte) (CreateResult, err
 	entry.bodyDigest = bodyDigest
 	entry.sessionToken = sessionToken
 	entry.session = created
+	for _, previous := range replaced {
+		go previous.Close()
+	}
 	m.sessionsCreated.Add(1)
 	return CreateResult{
 		Token:   sessionToken,
@@ -362,6 +406,64 @@ func (m *Manager) Capacity() Capacity {
 	}
 }
 
+// ProfileSessionCounts returns the live session count for each configured profile.
+func (m *Manager) ProfileSessionCounts() map[string]int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make(map[string]int, len(m.config.Profiles))
+	for i := range m.config.Profiles {
+		name := m.config.Profiles[i].Name
+		result[name] = m.sessionsPerProfile[name]
+	}
+	return result
+}
+
+// ProfilesSnapshot returns a stable copy of the active profile configuration.
+func (m *Manager) ProfilesSnapshot() []config.Profile {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]config.Profile(nil), m.config.Profiles...)
+}
+
+// ReplaceProfiles atomically swaps profiles while keeping sessions belonging to
+// unchanged profiles alive. Sessions and bootstraps for removed credentials close.
+func (m *Manager) ReplaceProfiles(profiles []config.Profile) {
+	for i := range profiles {
+		profiles[i].CarrierMode = profiles[i].CarrierMode.WithDefault()
+		profiles[i].Limits = profiles[i].Limits.WithDefaults(m.config.Limits)
+	}
+	m.mu.Lock()
+	kept := make(map[string]config.Profile, len(profiles))
+	for i := range profiles {
+		kept[profiles[i].Name] = profiles[i]
+	}
+	unchanged := func(profile *config.Profile) bool {
+		current, exists := kept[profile.Name]
+		return exists && current.Backend == profile.Backend &&
+			subtle.ConstantTimeCompare(current.Capability[:], profile.Capability[:]) == 1
+	}
+	var closeSessions []*Session
+	for _, current := range m.sessions {
+		if !unchanged(current.profile) {
+			closeSessions = append(closeSessions, current)
+		}
+	}
+	for hash, entry := range m.bootstraps {
+		if !unchanged(entry.profile) {
+			m.removeBootstrapLocked(hash, entry)
+		}
+	}
+	m.config.Profiles = append([]config.Profile(nil), profiles...)
+	m.capabilityPrefixes = make(map[uint64]struct{}, len(profiles))
+	for i := range m.config.Profiles {
+		m.capabilityPrefixes[capabilityPrefix(m.config.Profiles[i].Capability[:])] = struct{}{}
+	}
+	m.mu.Unlock()
+	for _, current := range closeSessions {
+		current.Close()
+	}
+}
+
 func (m *Manager) Shutdown() {
 	m.mu.Lock()
 	if m.closed {
@@ -406,9 +508,13 @@ func (m *Manager) sessionFinished(value *Session) {
 			if m.sessionsPerIP[value.clientIP] == 0 {
 				delete(m.sessionsPerIP, value.clientIP)
 			}
-			m.sessionsPerProfile[value.profile.Name]--
-			if m.sessionsPerProfile[value.profile.Name] == 0 {
-				delete(m.sessionsPerProfile, value.profile.Name)
+			if _, superseded := m.supersededSessions[value]; superseded {
+				delete(m.supersededSessions, value)
+			} else {
+				m.sessionsPerProfile[value.profile.Name]--
+				if m.sessionsPerProfile[value.profile.Name] == 0 {
+					delete(m.sessionsPerProfile, value.profile.Name)
+				}
 			}
 			break
 		}

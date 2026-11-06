@@ -1,3 +1,5 @@
+[راهنمای فارسی نصب و مدیریت](README.fa.md)
+
 # tproxy-server
 
 `tproxy-server` is the hosted half of a proof-of-concept WEB proxy type for

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -122,6 +123,8 @@ func (s *Server) AdminHandler() http.Handler {
 	})
 	mux.HandleFunc("/readyz", s.serveReady)
 	mux.HandleFunc("/metrics", s.serveMetrics)
+	mux.HandleFunc("/profile-sessions", s.serveProfileSessions)
+	mux.HandleFunc("/reload", s.serveReload)
 	if s.config.EnablePprof {
 		mux.HandleFunc("/debug/pprof/", pprof.Index)
 		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
@@ -130,6 +133,50 @@ func (s *Server) AdminHandler() http.Handler {
 		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	}
 	return mux
+}
+
+func (s *Server) serveProfileSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(s.manager.ProfileSessionCounts())
+}
+
+func (s *Server) serveReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "profile registry too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	defer func() {
+		for i := range body {
+			body[i] = 0
+		}
+	}()
+	profiles, err := config.LoadProfilesData(body, s.config.PublicHostname, s.config.BasePath, s.config.Limits)
+	if err != nil {
+		http.Error(w, "invalid profile registry", http.StatusBadRequest)
+		return
+	}
+	for i := range profiles {
+		connection, dialErr := net.DialTimeout("tcp", profiles[i].Backend, s.config.Timeouts.BackendDial.Value())
+		if dialErr != nil {
+			http.Error(w, "profile backend unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_ = connection.Close()
+	}
+	s.manager.ReplaceProfiles(profiles)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(map[string]int{"profiles": len(profiles)})
 }
 
 func (s *Server) Shutdown() {
@@ -681,7 +728,7 @@ func (s *Server) serveReady(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	for _, profile := range s.config.Profiles {
+	for _, profile := range s.manager.ProfilesSnapshot() {
 		connection, err := net.DialTimeout("tcp", profile.Backend, s.config.Timeouts.BackendDial.Value())
 		if err != nil {
 			http.Error(w, "backend unavailable", http.StatusServiceUnavailable)

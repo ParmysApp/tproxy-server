@@ -534,6 +534,15 @@ func loadProfiles(path, host, basePath string, limits Limits) ([]Profile, error)
 			input[i] = 0
 		}
 	}()
+	return parseProfiles(input, host, basePath, limits)
+}
+
+// LoadProfilesData validates and derives profiles from an in-memory registry.
+func LoadProfilesData(input []byte, host, basePath string, limits Limits) ([]Profile, error) {
+	return parseProfiles(input, host, basePath, limits)
+}
+
+func parseProfiles(input []byte, host, basePath string, limits Limits) ([]Profile, error) {
 	var source profileFile
 	decoder := json.NewDecoder(bytes.NewReader(input))
 	decoder.DisallowUnknownFields()
