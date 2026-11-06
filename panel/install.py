@@ -46,6 +46,7 @@ else:
         'base_path': config.get('base_path', ''),
         'proxies': [
             {'name': p['name'], 'secret': p['secret'], 'backend': p['backend'],
+             'mtproxy_port': int(p['backend'].rsplit(':', 1)[1]),
              'carrier_mode': p.get('carrier_mode', 'https'), 'enabled': True}
             for p in existing
         ],
