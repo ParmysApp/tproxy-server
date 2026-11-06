@@ -11,7 +11,8 @@ from pathlib import Path
 
 app_src = Path('/tmp/proxy-panel-app.py')
 launcher_src = Path('/tmp/mtproxy-launcher.py')
-if not app_src.is_file() or not launcher_src.is_file():
+mtproxy_unit_src = Path(__file__).with_name('mtproxy.service')
+if not app_src.is_file() or not launcher_src.is_file() or not mtproxy_unit_src.is_file():
     raise SystemExit('panel source files missing')
 
 panel_dir = Path('/opt/tproxy-panel')
@@ -79,14 +80,7 @@ new_env = ('\n'.join(env_lines).rstrip() + '\n').encode()
 atomic_write(env_path, new_env, stat.S_IMODE(env_info.st_mode), env_info.st_uid, env_info.st_gid)
 
 unit_path = Path('/etc/systemd/system/mtproxy.service')
-unit_info = unit_path.stat()
-unit = unit_path.read_text()
-lines = unit.splitlines()
-exec_lines = [i for i, line in enumerate(lines) if line.startswith('ExecStart=')]
-if len(exec_lines) != 1:
-    raise SystemExit('unexpected mtproxy.service ExecStart layout')
-lines[exec_lines[0]] = 'ExecStart=/usr/local/sbin/mtproxy-panel-launcher'
-atomic_write(unit_path, ('\n'.join(lines)+'\n').encode(), stat.S_IMODE(unit_info.st_mode), unit_info.st_uid, unit_info.st_gid)
+install_file(mtproxy_unit_src, unit_path, 0o644)
 
 panel_env = config_dir/'panel.env'
 if panel_env.exists():
