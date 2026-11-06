@@ -40,12 +40,20 @@ func Render(hostname, basePath, bootstrapToken, carrierMode string, batchBytes i
 	baseJSON, _ := json.Marshal("https://" + hostname + config.Base(basePath))
 	tokenJSON, _ := json.Marshal(bootstrapToken)
 	carrierJSON, _ := json.Marshal(carrierMode)
+	queueLimit := 32 * 1024 * 1024
+	laneQueueLimit := 8 * 1024 * 1024
+	if carrierMode == string(config.CarrierWebSocketLanes) {
+		queueLimit *= 2
+		laneQueueLimit *= 2
+	}
 	body := strings.ReplaceAll(document, "__NONCE__", nonce)
 	body = strings.ReplaceAll(body, "__RELAY_BASE__", string(baseJSON))
 	body = strings.ReplaceAll(body, "__BOOTSTRAP__", string(tokenJSON))
 	body = strings.ReplaceAll(body, "__CARRIER_MODE__", string(carrierJSON))
 	body = strings.ReplaceAll(body, "__BATCH_LIMIT__", strconv.Itoa(batchBytes))
-	if strings.Contains(body, "__NONCE__") || strings.Contains(body, "__RELAY_BASE__") || strings.Contains(body, "__BOOTSTRAP__") || strings.Contains(body, "__CARRIER_MODE__") || strings.Contains(body, "__BATCH_LIMIT__") {
+	body = strings.ReplaceAll(body, "__QUEUE_LIMIT__", strconv.Itoa(queueLimit))
+	body = strings.ReplaceAll(body, "__LANE_QUEUE_LIMIT__", strconv.Itoa(laneQueueLimit))
+	if strings.Contains(body, "__NONCE__") || strings.Contains(body, "__RELAY_BASE__") || strings.Contains(body, "__BOOTSTRAP__") || strings.Contains(body, "__CARRIER_MODE__") || strings.Contains(body, "__BATCH_LIMIT__") || strings.Contains(body, "__QUEUE_LIMIT__") || strings.Contains(body, "__LANE_QUEUE_LIMIT__") {
 		return Page{}, errors.New("bridge template replacement failed")
 	}
 	return Page{
@@ -89,8 +97,8 @@ history.replaceState(null,'',location.pathname);
 let initialized=false,closed=false,port=null,sessionToken='',createStarted=false;
 let queuedBytes=0,queuedItems=0,pollController=null,webSocket=null,webSocketTimer=0;
 const pending=[],upPending=[],lanes=new Map(),closedLanes=new Set(),closedLaneOrder=[];
-const queueLimit=33554432,queueItemLimit=16384,closedLaneLimit=4096;
-const laneQueueLimit=8388608,laneItemLimit=1024,batchLimit=__BATCH_LIMIT__;
+const queueLimit=__QUEUE_LIMIT__,queueItemLimit=16384,closedLaneLimit=4096;
+const laneQueueLimit=__LANE_QUEUE_LIMIT__,laneItemLimit=1024,batchLimit=__BATCH_LIMIT__;
 let upSequence=1,downCursor='0',upRunning=false;
 const status=state=>{if(port&&!closed)port.postMessage({t:'status',state})};
 const pause=milliseconds=>new Promise(resolve=>setTimeout(resolve,milliseconds));

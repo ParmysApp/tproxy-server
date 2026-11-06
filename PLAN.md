@@ -623,7 +623,7 @@ Per session state includes:
 - cancellation context closing all backend sockets and goroutines.
 
 The bridge also bounds its pre-session, queued, and in-flight uplink data at 32 MiB
-and 16384 retained buffers. It counts an in-flight request until acknowledgement, so
+for baseline modes or 64 MiB for `websocket-lanes`, with 16384 retained buffers. It counts an in-flight request until acknowledgement, so
 a slow upload cannot hide one full batch from the queue limit.
 
 The WebView carrier may lose connectivity while its page remains alive. The same
@@ -737,7 +737,7 @@ Initial defaults are configurable and covered by tests:
 | Initial stream window | 4 MiB |
 | Logical streams per session | 128 |
 | Recently closed stream ids per session | 4096 |
-| Pending bytes per session | 32 MiB |
+| Pending bytes per session | 32 MiB baseline; 64 MiB for panel-created `websocket-lanes` profiles |
 | Pending bytes process-wide | 512 MiB |
 | Pending items per session | 16384 |
 | Pending items process-wide | 262144 |

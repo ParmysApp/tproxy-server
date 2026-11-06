@@ -351,7 +351,8 @@ protocol remains authoritative for end-to-end backpressure. Text messages,
 additional multiplexed WebSockets for the same relay session, oversized messages,
 malformed frame batches, and an incorrect subprotocol are rejected.
 
-The bridge limits its queued plus browser-buffered uplink to 32 MiB. The relay waits
+The bridge limits its queued plus browser-buffered uplink to 32 MiB for the
+baseline modes and 64 MiB for `websocket-lanes`. The relay waits
 up to 30 seconds for temporary backend-write backpressure to clear before closing the
 carrier. A WebSocket loss closes the relay session and every logical stream; this
 reference implementation does not resume a partially delivered WebSocket session.
@@ -388,8 +389,11 @@ treated as parent-carrier failure because it normally means the relay session,
 origin, or network is no longer usable. Deleting or expiring the parent session
 still closes every lane. The relay closes only the affected established lane for
 a text, oversized, malformed, or cross-lane client message; the bridge treats an
-invalid relay message as parent-carrier failure. It retains the 32 MiB global
-uplink bound and additionally limits each lane to 8 MiB and 1024 queued items.
+invalid relay message as parent-carrier failure. The reference panel configures
+`websocket-lanes` profiles with a 64 MiB per-session relay budget, while the bridge
+limits each client-side lane to 16 MiB and 1024 queued items. Baseline profiles keep
+their 32 MiB session and 8 MiB lane budgets. The process-wide relay budget remains
+512 MiB.
 
 The mode removes application-level head-of-line blocking between interactive API
 and bulk media streams. It can also isolate TCP congestion and packet loss when

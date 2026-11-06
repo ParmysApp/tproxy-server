@@ -208,7 +208,7 @@ func Defaults() Config {
 			CarrierBatchBytes:         2 * 1024 * 1024,
 			MaxStreamsPerSession:      128,
 			MaxClosedStreamIDs:        4096,
-			MaxPendingPerSession:      32 * 1024 * 1024,
+			MaxPendingPerSession:      64 * 1024 * 1024,
 			MaxPendingGlobal:          512 * 1024 * 1024,
 			MaxPendingItemsPerSession: 16 * 1024,
 			MaxPendingItemsGlobal:     256 * 1024,
